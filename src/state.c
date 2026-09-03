@@ -58,6 +58,7 @@ void write_state(driver_state_type *state) {
         fprintf(fp, "connected_device_full_distance_cm=%.2f\n", state->connected_device_full_distance_cm);
         fprintf(fp, "connected_device_full_size_cm=%.2f\n", state->connected_device_full_size_cm);
         fprintf(fp, "connected_device_pose_has_position=%s\n", state->connected_device_pose_has_position ? "true" : "false");
+        fprintf(fp, "connected_device_possible_imu_misalignment=%s\n", state->connected_device_possible_imu_misalignment ? "true" : "false");
         if (state->breezy_desktop_smooth_follow_enabled)
             fprintf(fp, "breezy_desktop_smooth_follow_enabled=true\n");
         if (state->is_gamescope_reshade_ipc_connected)
@@ -140,6 +141,7 @@ void update_state_from_device(driver_state_type *state, device_properties_type *
         state->connected_device_full_distance_cm = full_distance_cm;
         state->connected_device_full_size_cm = 2.0f * full_distance_cm * tanf(degree_to_radian(primary_device->fov) * 0.5f);
         state->connected_device_pose_has_position = primary_device->provides_position || (supplemental_device != NULL && supplemental_device->provides_position);
+        state->connected_device_possible_imu_misalignment = primary_device->possible_imu_misalignment;
 
         state->calibration_setup = primary_device->calibration_setup;
         state->sbs_mode_supported = primary_device->sbs_mode_supported;

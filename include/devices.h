@@ -32,6 +32,7 @@ struct device_properties_t {
     calibration_setup_type calibration_setup;
 
     float pitch_adjustment_degrees;
+    bool possible_imu_misalignment;
 
     // resolution width and height
     int resolution_w;

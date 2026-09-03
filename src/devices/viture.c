@@ -32,7 +32,6 @@
 #define VITURE_GLASSES_VERSION_MAX 64
 #define VITURE_ID_VENDOR 0x35ca
 
-#define VITURE_ID_PRODUCT_BEAST_LARGE 0x1211
 #define VITURE_DRIVER_ID "viture"
 #define VITURE_IMU_FREQUENCY_COUNT 6
 #define VITURE_IMU_FREQUENCY_DEFAULT VITURE_IMU_FREQUENCY_MEDIUM_HIGH
@@ -736,6 +735,7 @@ static device_properties_type* viture_supported_device(uint16_t vendor_id, uint1
     device->calibration_wait_s = viture_calibration_wait_s[model_index];
     device->look_ahead_constant = (float)viture_look_ahead_constant[model_index];
     device->pitch_adjustment_degrees = viture_pitch_adjustments[model_index];
+    device->possible_imu_misalignment = equal(VITURE_MARKET_NAME_BEAST, device->model);
 
     requires_coordinate_adjustment = equal(VITURE_MARKET_NAME_PRO2, device->model);
 
