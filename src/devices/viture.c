@@ -139,6 +139,7 @@ static int viture_saved_native_mode = -1;
 static int viture_saved_dof = -1;
 static int viture_saved_display_size = -1;
 static int viture_callback_logs_remaining = 10;
+static bool display_mode_switching = false;
 
 static const int viture_frequency_hz[VITURE_IMU_FREQUENCY_COUNT] = {60, 90, 120, 240, 500, 1000};
 
@@ -236,7 +237,7 @@ static bool viture_display_mode_is_sbs(int mode, bool native_mode) {
                        : viture_bypass_display_mode_is_sbs(mode);
 }
 
-static bool viture_get_active_display_state_locked(int* mode, bool* native_mode) {
+static bool viture_get_display_mode_locked(int* mode, bool* native_mode, bool allow_bypass_fallback) {
     if (viture_provider == NULL || mode == NULL) return false;
 
     int current_native_mode = viture_get_native_mode_locked();
@@ -247,6 +248,8 @@ static bool viture_get_active_display_state_locked(int* mode, bool* native_mode)
         if (native_mode != NULL) *native_mode = true;
         return true;
     }
+
+    if (current_native_mode < 0 && !allow_bypass_fallback) return false;
 
     if (current_native_mode < 0 && config()->debug_device) {
         log_debug("VITURE: Failed to query native mode (%d), falling back to bypass display mode\n",
@@ -266,23 +269,20 @@ static bool viture_get_display_state_locked(int* native_mode, int* display_mode,
         return false;
     }
 
-    int current_native_mode = viture_get_native_mode_locked();
-    if (current_native_mode < 0) return false;
+    bool is_native_mode = false;
+    if (!viture_get_display_mode_locked(display_mode, &is_native_mode, false)) return false;
 
-    *native_mode = current_native_mode;
-    if (current_native_mode == 1) {
-        *display_mode = xr_device_provider_native_get_display_mode(viture_provider);
-        if (*display_mode < 0) return false;
+    *native_mode = is_native_mode ? 1 : 0;
+    if (is_native_mode) {
         *dof = xr_device_provider_native_get_dof(viture_provider);
         if (*dof < 0) return false;
         *display_size = xr_device_provider_native_get_display_size(viture_provider);
         return *display_size >= 0;
     }
 
-    *display_mode = xr_device_provider_get_display_mode(viture_provider);
     *dof = VITURE_NATIVE_DOF_0;
     *display_size = -1;
-    return *display_mode >= 0;
+    return true;
 }
 
 static bool viture_restore_display_state_locked(int native_mode, int display_mode, int dof, int display_size) {
@@ -299,25 +299,11 @@ static bool viture_restore_display_state_locked(int native_mode, int display_mod
     return success;
 }
 
-static bool viture_switch_dimension_locked(bool enabled) {
-    int current_native_mode = viture_get_native_mode_locked();
-    if (current_native_mode == 1) {
-        return xr_device_provider_native_switch_dimension(viture_provider, enabled) == 0;
-    }
-
-    if (current_native_mode < 0 && config()->debug_device) {
-        log_debug("VITURE: Failed to query native mode before switching SBS (%d), falling back to bypass path\n",
-                  current_native_mode);
-    }
-
-    return xr_device_provider_switch_dimension(viture_provider, enabled) == 0;
-}
-
 static void viture_refresh_sbs_state_locked() {
     if (viture_provider == NULL) return;
     int mode = 0;
     bool native_mode = false;
-    if (viture_get_active_display_state_locked(&mode, &native_mode)) {
+    if (viture_get_display_mode_locked(&mode, &native_mode, true)) {
         sbs_mode_enabled = viture_display_mode_is_sbs(mode, native_mode);
     } else if (config()->debug_device) {
         log_debug("VITURE: Failed to refresh SBS state\n");
@@ -736,6 +722,8 @@ static device_properties_type* viture_supported_device(uint16_t vendor_id, uint1
     device->look_ahead_constant = (float)viture_look_ahead_constant[model_index];
     device->pitch_adjustment_degrees = viture_pitch_adjustments[model_index];
     device->possible_imu_misalignment = equal(VITURE_MARKET_NAME_BEAST, device->model);
+    device->sbs_mode_supported = !(equal(VITURE_MARKET_NAME_PRO2, device->model) ||
+                                    equal(VITURE_MARKET_NAME_BEAST, device->model));
 
     requires_coordinate_adjustment = equal(VITURE_MARKET_NAME_PRO2, device->model);
 
@@ -937,10 +925,33 @@ static void viture_stop_stream_locked() {
     }
 }
 
+static bool viture_switch_dimension_locked(bool enabled) {
+    // *_switch_dimension fails if we're still streaming IMU data, so we stop the stream
+    // and set the switching flag to protect block_on_device from exiting during the switch
+    display_mode_switching = true;
+    viture_stop_stream_locked();
+
+    int current_native_mode = viture_get_native_mode_locked();
+    if (current_native_mode == 1) {
+        bool success = xr_device_provider_native_switch_dimension(viture_provider, enabled) == 0;
+        viture_start_stream_locked();
+        display_mode_switching = false;
+        return success;
+    }
+
+    if (current_native_mode < 0 && config()->debug_device) {
+        log_debug("VITURE: Failed to query native mode before switching SBS (%d), falling back to bypass path\n",
+                  current_native_mode);
+    }
+
+    bool success = xr_device_provider_switch_dimension(viture_provider, enabled) == 0;
+    viture_start_stream_locked();
+    display_mode_switching = false;
+    return success;
+}
+
 static void viture_shutdown_provider_locked() {
     if (!initialized || viture_provider == NULL) return;
-
-    viture_fusion_stop_locked();
 
     if (xr_device_provider_shutdown(viture_provider) != 0 && config()->debug_device) {
         log_debug("VITURE: xr_device_provider_shutdown reported an error\n");
@@ -974,8 +985,6 @@ static void viture_update_device_properties(device_properties_type* device) {
 
     viture_apply_imu_rate(device, cycles_per_s);
     device->provides_position = provides_position;
-    device->sbs_mode_supported = true;
-    device->firmware_update_recommended = false;
 }
 
 static void disconnect(bool soft) {
@@ -1032,8 +1041,7 @@ static bool viture_device_connect() {
 static void viture_block_on_device() {
     if (connected) {
         wait_for_imu_start();
-        while (connected) {
-            if (!is_imu_alive()) break;
+        while ((connected && is_imu_alive()) || display_mode_switching) {
             sleep(1);
         }
     }
@@ -1057,7 +1065,7 @@ static bool viture_device_set_sbs_mode(bool enabled) {
     if (viture_provider != NULL && connected) {
         success = viture_switch_dimension_locked(enabled);
         if (success) {
-            viture_refresh_sbs_state_locked();
+            sbs_mode_enabled = enabled;
             if (config()->debug_device) {
                 log_debug("VITURE: SBS mode set to %d\n", sbs_mode_enabled);
             }
